@@ -27,6 +27,11 @@ const api = {
     ipcRenderer.on('app:close-requested', listener);
     return () => ipcRenderer.removeListener('app:close-requested', listener);
   },
+  onOpenFile: (callback: (filePath: string) => void): Unsubscribe => {
+    const listener = (_event: unknown, filePath: string) => callback(filePath);
+    ipcRenderer.on('app:open-file', listener);
+    return () => ipcRenderer.removeListener('app:open-file', listener);
+  },
   ...(process.env.FOLIO_TEST_MODE === '1'
     ? {
         testCloseWindow: (): void => ipcRenderer.send('test:request-close'),

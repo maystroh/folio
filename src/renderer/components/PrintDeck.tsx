@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 import type { Annotation } from '../annotations/types';
 import { AnnotationLayer } from './AnnotationLayer';
@@ -47,18 +47,21 @@ function PrintPage({
     };
   }, [active, page, pageNumber, pdf]);
 
-  const scale = page
-    ? Math.min(
-        CONTENT_WIDTH_PX / page.getViewport({ scale: 1, rotation: page.rotate + rotation }).width,
-        CONTENT_HEIGHT_PX / page.getViewport({ scale: 1, rotation: page.rotate + rotation }).height,
-        2.2,
-      )
-    : 1;
-
-  const viewport =
-    page && active
-      ? page.getViewport({ scale, rotation: page.rotate + rotation })
-      : null;
+  const { scale, viewport } = useMemo(() => {
+    if (!page) {
+      return { scale: 1, viewport: null };
+    }
+    const base = page.getViewport({ scale: 1, rotation: page.rotate + rotation });
+    const nextScale = Math.min(
+      CONTENT_WIDTH_PX / base.width,
+      CONTENT_HEIGHT_PX / base.height,
+      2.2,
+    );
+    return {
+      scale: nextScale,
+      viewport: page.getViewport({ scale: nextScale, rotation: page.rotate + rotation }),
+    };
+  }, [page, rotation]);
 
   useEffect(() => {
     if (!page || !viewport || !canvasRef.current || !active) return;
@@ -70,7 +73,9 @@ function PrintPage({
       onRendered(pageNumber);
       return;
     }
-    const pixelRatio = 2;
+    // Print content is 7.5 x 10 inches. 1.5x gives about 144 DPI, which is
+    // crisper than screen output without turning every page into a huge bitmap.
+    const pixelRatio = 1.5;
     const renderViewport = page.getViewport({
       scale: scale * pixelRatio,
       rotation: page.rotate + rotation,
@@ -86,7 +91,7 @@ function PrintPage({
       .then(() => {
         if (cancelled || reported.current) return;
         reported.current = true;
-        window.setTimeout(() => onRendered(pageNumber), 40);
+        onRendered(pageNumber);
       })
       .catch((caught: unknown) => {
         if (cancelled) return;

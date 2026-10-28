@@ -44,6 +44,8 @@ export default function App() {
   const showToast = useFolio((state) => state.showToast);
 
   const io = useDocumentIO();
+  const ioRef = useRef(io);
+  ioRef.current = io;
   const [dragActive, setDragActive] = useState(false);
   const dragCounter = useRef(0);
   const startupOpened = useRef(false);
@@ -69,6 +71,10 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    return window.folio.onOpenFile((filePath) => ioRef.current.requestOpenPath(filePath));
+  }, []);
+
   const startPrint = useCallback(() => {
     const state = useFolio.getState();
     if (!state.pdf || printJob) return;
@@ -84,6 +90,12 @@ export default function App() {
   const handlePrintProgress = useCallback((rendered: number, total: number) => {
     setPrintProgress((current) => (current ? { ...current, rendered, total } : current));
   }, []);
+
+  const cancelPrint = useCallback(() => {
+    setPrintJob(null);
+    setPrintProgress(null);
+    showToast('Print preparation canceled.');
+  }, [showToast]);
 
   const handlePrintReady = useCallback(async () => {
     setPrintProgress((current) => (current ? { ...current, phase: 'dialog' } : current));
@@ -113,6 +125,43 @@ export default function App() {
         return;
       }
       const state = useFolio.getState();
+
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        if (io.pendingAction) {
+          io.cancelConfirm();
+          return;
+        }
+        if (state.signatureDialogOpen) {
+          state.setSignatureDialogOpen(false);
+          return;
+        }
+        if (state.noteEditorId) {
+          state.setNoteEditor(null);
+          return;
+        }
+        if (printJob) {
+          cancelPrint();
+          return;
+        }
+        if (state.loading) {
+          state.cancelLoading();
+          showToast('Opening canceled.');
+          return;
+        }
+        if (dragActive) {
+          dragCounter.current = 0;
+          setDragActive(false);
+          return;
+        }
+        window.getSelection()?.removeAllRanges();
+        if (state.pdf) {
+          if (state.tool !== 'select') state.setTool('select');
+          else if (state.selectedAnnotationId) state.selectAnnotation(null);
+        }
+        return;
+      }
+
       const mod = event.ctrlKey || event.metaKey;
       if (mod) {
         const key = event.key.toLowerCase();
@@ -152,23 +201,11 @@ export default function App() {
       }
 
       if (state.signatureDialogOpen || state.noteEditorId || io.pendingAction) {
-        if (event.key === 'Escape') {
-          if (state.signatureDialogOpen) state.setSignatureDialogOpen(false);
-          else if (state.noteEditorId) state.setNoteEditor(null);
-          else io.cancelConfirm();
-        }
         return;
       }
 
       if (!state.pdf) return;
       switch (event.key) {
-        case 'Escape':
-          if (state.tool !== 'select') {
-            state.setTool('select');
-          } else {
-            state.selectAnnotation(null);
-          }
-          break;
         case 'ArrowLeft':
           event.preventDefault();
           state.goToPage(state.currentPage - 1);
@@ -207,7 +244,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [io, startPrint]);
+  }, [cancelPrint, dragActive, io, printJob, showToast, startPrint]);
 
   const handleDragEnter = (event: React.DragEvent) => {
     event.preventDefault();
@@ -298,6 +335,18 @@ export default function App() {
               <strong>{loading ? loadingLabel || 'Opening document' : busy}</strong>
               <span>{loading ? 'Preparing pages…' : 'This will only take a moment.'}</span>
             </div>
+            {loading && (
+              <button
+                type="button"
+                className="secondary-button busy-cancel"
+                onClick={() => {
+                  useFolio.getState().cancelLoading();
+                  showToast('Opening canceled.');
+                }}
+              >
+                Cancel
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -317,9 +366,12 @@ export default function App() {
                   ? 'Choose your printer in the Windows dialog.'
                   : `Page ${Math.min(printProgress.rendered + 1, printProgress.total)} of ${
                       printProgress.total
-                    }`}
+                    } · Press Esc to cancel`}
               </span>
             </div>
+            <button type="button" className="secondary-button busy-cancel" onClick={cancelPrint}>
+              Cancel
+            </button>
           </div>
         </div>
       )}

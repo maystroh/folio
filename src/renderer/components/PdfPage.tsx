@@ -72,6 +72,32 @@ export function PdfPage({
     [page, zoom, rotation],
   );
 
+  const cancelDraft = useCallback(() => {
+    if (drawingPointer.current !== null && pageRef.current) {
+      try {
+        pageRef.current.releasePointerCapture(drawingPointer.current);
+      } catch {
+        // The pointer may already have been released.
+      }
+    }
+    drawingPointer.current = null;
+    draftRef.current = null;
+    setDraftInk(null);
+    document.body.classList.remove('is-dragging-annotation');
+  }, []);
+
+  useEffect(() => {
+    if (tool !== 'pen') cancelDraft();
+  }, [cancelDraft, tool]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') cancelDraft();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [cancelDraft]);
+
   useEffect(() => {
     registerPage(pageNumber, pageRef.current);
     return () => registerPage(pageNumber, null);

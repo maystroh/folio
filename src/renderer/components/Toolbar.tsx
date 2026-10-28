@@ -146,6 +146,10 @@ export function Toolbar() {
               if (event.key === 'Enter') {
                 commitPage();
                 (event.target as HTMLInputElement).blur();
+              } else if (event.key === 'Escape') {
+                event.preventDefault();
+                setPageInput(String(currentPage));
+                (event.target as HTMLInputElement).blur();
               }
             }}
             aria-label="Current page"

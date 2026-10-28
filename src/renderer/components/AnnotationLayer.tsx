@@ -107,6 +107,19 @@ export function AnnotationLayer({
   const previewRef = useRef<Annotation | null>(null);
 
   useEffect(() => {
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || !interactionRef.current) return;
+      event.preventDefault();
+      interactionRef.current = null;
+      previewRef.current = null;
+      setPreview(null);
+      document.body.classList.remove('is-dragging-annotation');
+    };
+    window.addEventListener('keydown', onEscape);
+    return () => window.removeEventListener('keydown', onEscape);
+  }, []);
+
+  useEffect(() => {
     function onPointerMove(event: PointerEvent) {
       const interaction = interactionRef.current;
       if (!interaction || event.pointerId !== interaction.pointerId || !pageElement) return;

@@ -20,6 +20,7 @@ Folio is a calm, focused Windows desktop PDF reader with real annotation tools. 
 - **Restore** the saved workspace by opening the `.folio` file later.
 - **Export** a standard annotated PDF that opens in ordinary PDF readers. Highlights, ink, notes, and signatures are flattened into the document.
 - **Print** the document with annotations intact.
+- **Single-instance behavior** — opening another PDF from Explorer focuses the existing window and routes the file through the unsaved-changes prompt.
 - **Read in the dark** with a true near-black reading surface: the rendered PDF page itself is darkened while annotations and signatures stay legible.
 - **Stay protected** by an unsaved-changes prompt when closing or opening another document.
 
@@ -87,7 +88,11 @@ If McAfee or another security product blocks an extracted script, allow the extr
    - **Note** — click a page to place a note, then type. Double-click a note to edit it later.
    - **Sign** — draw/upload/photograph a signature, then click the page to place it. Keep the Sign tool active and click again to reuse the current signature; use the chevron to switch or manage the signature library.
 4. Use **Save** (`Ctrl+S`) for a `.folio` workspace and **Export** (`Ctrl+Shift+E`) for a flattened PDF.
-5. Use **Print** (`Ctrl+P`) to send the annotated pages to a printer.
+5. Use **Print** (`Ctrl+P`) to send the annotated pages to a printer. Print preparation shows page progress and can be canceled with **Esc** or the **Cancel** button.
+
+Press **Esc** at any time to cancel the current action: it stops an in-progress stroke or annotation drag, clears a selection, closes dialogs, exits the active tool, cancels print preparation, or cancels a document that is still opening.
+
+PDF text can be selected directly. Use `Ctrl+C` or right-click → **Copy** to copy it.
 
 ### Keyboard shortcuts
 
@@ -97,6 +102,7 @@ If McAfee or another security product blocks an extracted script, allow the extr
 | Save workspace | `Ctrl+S` |
 | Export annotated PDF | `Ctrl+Shift+E` |
 | Print | `Ctrl+P` |
+| Cancel the current action | `Esc` |
 | Previous / next page | `←` / `→`, `PageUp` / `PageDown` |
 | Zoom in / out | `Ctrl++` / `Ctrl+-` |
 | Fit page | `Ctrl+0` |

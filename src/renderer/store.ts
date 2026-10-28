@@ -129,6 +129,7 @@ interface FolioState {
   setDirty: (dirty: boolean) => void;
 
   setLoading: (loading: boolean, label?: string) => void;
+  cancelLoading: () => void;
   setBusy: (busy: string | null) => void;
   setError: (error: string | null) => void;
   showToast: (message: string, tone?: ToastMessage['tone']) => void;
@@ -208,6 +209,10 @@ export const useFolio = create<FolioState>((set, get) => ({
       }
 
       const firstPage = await loaded.pdf.getPage(1);
+      if (token !== documentToken) {
+        void loaded.pdf.destroy();
+        return;
+      }
       const firstViewport = firstPage.getViewport({ scale: 1, rotation: firstPage.rotate });
       const firstGeometry: PageGeometry = {
         width: firstViewport.width,
@@ -217,6 +222,10 @@ export const useFolio = create<FolioState>((set, get) => ({
       const geometries = pageGeometryDefaults(loaded.pageCount).map((geometry, index) =>
         index === 0 ? firstGeometry : geometry,
       );
+      if (token !== documentToken) {
+        void loaded.pdf.destroy();
+        return;
+      }
       const previous = get().pdf;
       const restore = input.restore;
       const restoredPage = Math.min(
@@ -490,6 +499,12 @@ export const useFolio = create<FolioState>((set, get) => ({
   setDirty: (isDirty) => set({ isDirty }),
 
   setLoading: (loading, loadingLabel = '') => set({ loading, loadingLabel }),
+
+  cancelLoading: () => {
+    documentToken += 1;
+    set({ loading: false, loadingLabel: '' });
+  },
+
   setBusy: (busy) => set({ busy }),
   setError: (error) => set({ error }),
 

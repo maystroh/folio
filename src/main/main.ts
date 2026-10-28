@@ -1,4 +1,13 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, session, shell } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  Menu,
+  session,
+  shell,
+  type MenuItemConstructorOptions,
+} from 'electron';
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import path from 'node:path';
@@ -51,7 +60,30 @@ let mainWindow: BrowserWindow | null = null;
 let isDirty = false;
 let allowClose = false;
 
-const LIGHT_BAR = { color: '#f4f0e8', symbolColor: '#34322d' };
+function fileFromArgs(args: string[]): string | null {
+  for (const arg of [...args].reverse()) {
+    if (arg.startsWith('-')) continue;
+    if (/\.(pdf|folio)$/i.test(arg)) return arg;
+  }
+  return null;
+}
+
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (!hasSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', (_event, argv) => {
+    if (!mainWindow) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+    const filePath = fileFromArgs(argv.slice(1));
+    if (filePath) mainWindow.webContents.send('app:open-file', filePath);
+  });
+}
+
+const LIGHT_BAR = { color: '#f7f8fa', symbolColor: '#2c3137' };
 const DARK_BAR = { color: '#121312', symbolColor: '#d7d4cd' };
 
 function sendCloseRequest() {
@@ -67,7 +99,7 @@ function createWindow() {
     minHeight: 640,
     show: true,
     title: 'Folio',
-    backgroundColor: '#f4f0e8',
+    backgroundColor: '#f4f6f8',
     autoHideMenuBar: true,
     titleBarStyle: 'hidden',
     titleBarOverlay: {
@@ -98,6 +130,32 @@ function createWindow() {
     debugLog(`renderer-console[${level}] ${message}`);
   });
 
+  mainWindow.webContents.on('context-menu', (_event, params) => {
+    if (!mainWindow) return;
+    const hasSelection = params.selectionText.trim().length > 0;
+    if (!params.isEditable && !hasSelection) return;
+
+    const template: MenuItemConstructorOptions[] = [];
+    if (params.isEditable) {
+      template.push(
+        { role: 'undo', enabled: params.editFlags.canUndo },
+        { role: 'redo', enabled: params.editFlags.canRedo },
+        { type: 'separator' },
+        { role: 'cut', enabled: params.editFlags.canCut },
+        { role: 'copy', enabled: params.editFlags.canCopy },
+        { role: 'paste', enabled: params.editFlags.canPaste },
+        { type: 'separator' },
+        { role: 'selectAll' },
+      );
+    } else {
+      template.push(
+        { role: 'copy', label: 'Copy', enabled: hasSelection || params.editFlags.canCopy },
+        { role: 'selectAll', label: 'Select All' },
+      );
+    }
+    Menu.buildFromTemplate(template).popup({ window: mainWindow });
+  });
+
   mainWindow.on('close', (event) => {
     if (!allowClose && isDirty) {
       event.preventDefault();
@@ -126,12 +184,7 @@ function createWindow() {
 }
 
 function startupFile(): string | null {
-  const args = process.argv.slice(1);
-  for (const arg of args.reverse()) {
-    if (arg.startsWith('-')) continue;
-    if (/\.(pdf|folio)$/i.test(arg)) return arg;
-  }
-  return null;
+  return fileFromArgs(process.argv.slice(1));
 }
 
 async function readDocumentFile(filePath: string) {
@@ -143,7 +196,7 @@ async function readDocumentFile(filePath: string) {
   };
 }
 
-app.whenReady().then(() => {
+if (hasSingleInstanceLock) app.whenReady().then(() => {
   debugLog('app ready');
   if (process.platform === 'win32') app.setAppUserModelId('com.folio.reader');
   Menu.setApplicationMenu(null);
@@ -275,7 +328,7 @@ app.whenReady().then(() => {
     if (!mainWindow) return;
     const bar = theme === 'dark' ? DARK_BAR : LIGHT_BAR;
     mainWindow.setTitleBarOverlay({ ...bar, height: 48 });
-    mainWindow.setBackgroundColor(theme === 'dark' ? '#101110' : '#f4f0e8');
+    mainWindow.setBackgroundColor(theme === 'dark' ? '#101110' : '#f4f6f8');
   });
 
   ipcMain.on('window:set-title', (_event, title: string) => {

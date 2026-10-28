@@ -14,6 +14,7 @@ export interface FolioBridge {
   setDirty: (dirty: boolean) => void;
   forceClose: () => void;
   onCloseRequested: (callback: () => void) => () => void;
+  onOpenFile: (callback: (filePath: string) => void) => () => void;
   testCloseWindow?: () => void;
   platform: string;
 }

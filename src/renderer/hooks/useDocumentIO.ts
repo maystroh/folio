@@ -6,6 +6,7 @@ import { exportAnnotatedPdf } from '../export/exportPdf';
 type PendingAction =
   | { type: 'open-native' }
   | { type: 'open-file'; file: File }
+  | { type: 'open-path'; filePath: string }
   | { type: 'close' };
 
 interface NativeDocumentResult {
@@ -86,11 +87,23 @@ export function useDocumentIO() {
     }
   };
 
+  const openPathNow = async (filePath: string) => {
+    try {
+      const result = await window.folio.readDocument(filePath);
+      await loadNativeResult(result);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'That file could not be read.';
+      useFolio.getState().showToast(message, 'error');
+    }
+  };
+
   const executePending = async (action: PendingAction) => {
     if (action.type === 'open-native') {
       await openNativeNow();
     } else if (action.type === 'open-file') {
       await openFileObject(action.file);
+    } else if (action.type === 'open-path') {
+      await openPathNow(action.filePath);
     } else {
       window.folio.forceClose();
     }
@@ -106,6 +119,7 @@ export function useDocumentIO() {
 
   const requestOpen = () => void requestAction({ type: 'open-native' });
   const requestOpenFile = (file: File) => void requestAction({ type: 'open-file', file });
+  const requestOpenPath = (filePath: string) => void requestAction({ type: 'open-path', filePath });
   const requestClose = () => {
     if (!useFolio.getState().isDirty) {
       window.folio.forceClose();
@@ -235,6 +249,7 @@ export function useDocumentIO() {
     confirmBusy,
     requestOpen,
     requestOpenFile,
+    requestOpenPath,
     requestClose,
     save,
     exportPdf,

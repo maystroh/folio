@@ -14,10 +14,10 @@ const font = await doc.embedFont(StandardFonts.Helvetica);
 const serif = await doc.embedFont(StandardFonts.TimesRoman);
 const bold = await doc.embedFont(StandardFonts.HelveticaBold);
 
-const cream = rgb(0.973, 0.957, 0.925);
+const cream = rgb(1, 1, 1);
 const ink = rgb(0.145, 0.137, 0.118);
 const muted = rgb(0.43, 0.41, 0.36);
-const rust = rgb(0.69, 0.29, 0.2);
+const rust = rgb(0.31, 0.38, 0.46);
 
 const chapters = [
   {
