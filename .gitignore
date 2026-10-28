@@ -1,0 +1,14 @@
+node_modules/
+dist/
+dist-electron/
+release/
+*.log
+.DS_Store
+.folio-dev-data/
+.electron-user/
+.electron-cache/
+.builder-cache/
+.npm-cache/
+.tmp/
+tests/fixtures/*.folio
+tests/output/

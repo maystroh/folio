@@ -1,0 +1,68 @@
+{
+  "name": "folio",
+  "version": "1.0.0",
+  "description": "Folio — a calm, focused PDF reader and annotation app for Windows.",
+  "author": "Folio",
+  "license": "MIT",
+  "private": true,
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev:renderer": "vite --port 5173",
+    "dev:main": "tsc -p tsconfig.main.json --watch --preserveWatchOutput",
+    "dev:electron": "wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 node scripts/launch.mjs .",
+    "launch": "node scripts/launch.mjs .",
+    "dev": "npm run build:main && concurrently -k \"npm:dev:renderer\" \"npm:dev:main\" \"npm:dev:electron\"",
+    "build:main": "tsc -p tsconfig.main.json",
+    "build:renderer": "vite build",
+    "prepare:assets": "node scripts/copy-assets.mjs",
+    "prebuild": "npm run prepare:assets",
+    "build": "npm run build:main && npm run build:renderer",
+    "start": "npm run build && node scripts/launch.mjs .",
+    "preview": "node scripts/launch.mjs .",
+    "test:unit": "vitest run",
+    "test:e2e": "npm run build && node tests/e2e.mjs",
+    "test": "npm run test:unit && npm run test:e2e",
+    "sample": "node scripts/make-sample.mjs",
+    "dist": "npm run build && node scripts/build-windows.mjs"
+  },
+  "dependencies": {
+    "lucide-react": "^0.468.0",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^4.10.38",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zustand": "^5.0.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.0",
+    "cross-env": "^7.0.3",
+    "electron": "^31.7.7",
+    "electron-builder": "^25.1.8",
+    "playwright": "^1.49.1",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11",
+    "vitest": "^2.1.8",
+    "wait-on": "^8.0.1"
+  },
+  "build": {
+    "appId": "com.folio.reader",
+    "productName": "Folio",
+    "npmRebuild": false,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "win": {
+      "icon": "build/icon.ico"
+    }
+  }
+}
