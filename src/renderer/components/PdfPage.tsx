@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { PDFPageProxy, PageViewport } from 'pdfjs-dist';
 import { TextLayer } from 'pdfjs-dist';
 import type { InkAnnotation, PdfPoint, PdfRect } from '../annotations/types';
@@ -15,52 +15,59 @@ import {
   screenPointToPdf,
   screenRectToPdf,
 } from '../pdf/geometry';
+import { getPageTextContent, releasePageSoon, renderPixelRatio, retainPage } from '../pdf/pdfjs';
 
 interface PdfPageProps {
   pageNumber: number;
   geometry: PageGeometry;
-  pdfPage: PDFPageProxy | null;
   zoom: number;
   rotation: number;
   tool: 'select' | 'highlight' | 'pen' | 'note' | 'signature';
   annotations: import('../annotations/types').Annotation[];
   selectedId: string | null;
   theme: 'light' | 'dark';
-  scrollRoot: HTMLElement | null;
-  registerPage: (page: number, element: HTMLDivElement | null) => void;
-  onPageReady: (pageNumber: number, loadedPage: PDFPageProxy) => void;
 }
+
+interface RenderTaskLike {
+  cancel: () => void;
+  promise: Promise<unknown>;
+}
+
+/**
+ * A zoom change repaints every visible page. Painting immediately on each step
+ * of a Ctrl+wheel zoom means several megabytes of pixels per step; waiting for
+ * the zoom to settle keeps the gesture at frame rate while the browser scales
+ * the existing bitmap.
+ */
+const RENDER_SETTLE_MS = 110;
 
 function viewportFor(page: PDFPageProxy, zoom: number, rotation: number): PageViewport {
   return page.getViewport({ scale: zoom, rotation: page.rotate + rotation });
 }
 
-export function PdfPage({
+function PdfPageComponent({
   pageNumber,
   geometry,
-  pdfPage: initialPage,
   zoom,
   rotation,
   tool,
   annotations,
   selectedId,
   theme,
-  scrollRoot,
-  registerPage,
-  onPageReady,
 }: PdfPageProps) {
   const pageRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
-  const [page, setPage] = useState<PDFPageProxy | null>(initialPage);
-  const [nearViewport, setNearViewport] = useState(pageNumber <= 3);
+  const [page, setPage] = useState<PDFPageProxy | null>(null);
   const [rendered, setRendered] = useState(false);
   const [renderError, setRenderError] = useState<string | null>(null);
+  const hasBitmap = useRef(false);
   const draftRef = useRef<InkAnnotation | null>(null);
   const [draftInk, setDraftInk] = useState<InkAnnotation | null>(null);
   const drawingPointer = useRef<number | null>(null);
   const size = pageDisplaySize(geometry.width, geometry.height, rotation);
 
+  const pdf = useFolio((state) => state.pdf);
   const setPageGeometry = useFolio((state) => state.setPageGeometry);
   const addAnnotation = useFolio((state) => state.addAnnotation);
   const setNoteEditor = useFolio((state) => state.setNoteEditor);
@@ -99,49 +106,14 @@ export function PdfPage({
   }, [cancelDraft]);
 
   useEffect(() => {
-    registerPage(pageNumber, pageRef.current);
-    return () => registerPage(pageNumber, null);
-  }, [pageNumber, registerPage]);
-
-  useEffect(() => {
-    if (!scrollRoot || !pageRef.current) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (entry.isIntersecting) setNearViewport(true);
-          else setNearViewport(false);
-        }
-      },
-      { root: scrollRoot, rootMargin: '1300px 0px 1300px 0px', threshold: 0.001 },
-    );
-    observer.observe(pageRef.current);
-    return () => observer.disconnect();
-  }, [scrollRoot]);
-
-  useEffect(() => {
-    if (nearViewport) return;
-    // Release the bitmap for pages that have been left well behind. Keeping
-    // hundreds of high-resolution canvases alive would make large PDFs heavy.
-    const canvas = canvasRef.current;
-    if (canvas) {
-      canvas.width = 0;
-      canvas.height = 0;
-    }
-    setRendered(false);
-    textLayerRef.current?.replaceChildren();
-  }, [nearViewport]);
-
-  useEffect(() => {
-    if (!nearViewport || page) return;
-    let cancelled = false;
-    const pdf = useFolio.getState().pdf;
     if (!pdf) return;
+    let cancelled = false;
     pdf
       .getPage(pageNumber)
       .then((loaded) => {
         if (cancelled) return;
+        retainPage(loaded);
         setPage(loaded);
-        onPageReady(pageNumber, loaded);
         const viewport = loaded.getViewport({ scale: 1, rotation: loaded.rotate });
         setPageGeometry(pageNumber, {
           width: viewport.width,
@@ -155,73 +127,122 @@ export function PdfPage({
     return () => {
       cancelled = true;
     };
-  }, [nearViewport, onPageReady, page, pageNumber, setPageGeometry]);
+  }, [pageNumber, pdf, setPageGeometry]);
 
   useEffect(() => {
-    if (!page || !canvasRef.current || !nearViewport) return;
-    let cancelled = false;
-    let renderTask: { cancel: () => void; promise: Promise<unknown> } | null = null;
-    setRendered(false);
-    setRenderError(null);
-    const canvas = canvasRef.current;
-    const context = canvas.getContext('2d', { alpha: false });
-    if (!context) return;
+    if (!page) return;
+    retainPage(page);
+    return () => {
+      // Keep the page around briefly: scrolling back one page should not pay
+      // for a full re-parse, but a long book must not accumulate operator lists.
+      releasePageSoon(page);
+    };
+  }, [page]);
 
-    const maxDimension = Math.max(geometry.width, geometry.height) * zoom;
-    const pixelRatio = Math.min(
-      Math.max(window.devicePixelRatio || 1, 1),
-      2,
-      Math.max(1, 4096 / Math.max(1, maxDimension)),
-    );
-    const viewport = page.getViewport({
-      scale: zoom * pixelRatio,
-      rotation: page.rotate + rotation,
-    });
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!page || !canvas) return;
+    let cancelled = false;
+    let task: RenderTaskLike | null = null;
+    let timer = 0;
+
+    // Match the layout immediately so the page never jumps while the crisp
+    // bitmap is still being produced.
     const cssViewport = page.getViewport({ scale: zoom, rotation: page.rotate + rotation });
-    canvas.width = Math.max(1, Math.floor(viewport.width));
-    canvas.height = Math.max(1, Math.floor(viewport.height));
     canvas.style.width = `${cssViewport.width}px`;
     canvas.style.height = `${cssViewport.height}px`;
-    context.save();
-    context.fillStyle = '#ffffff';
-    context.fillRect(0, 0, canvas.width, canvas.height);
-    context.restore();
 
-    renderTask = page.render({ canvasContext: context, viewport });
-    renderTask.promise
-      .then(() => {
-        if (!cancelled) setRendered(true);
-      })
-      .catch((error: unknown) => {
-        const name = (error as { name?: string })?.name;
-        if (name !== 'RenderingCancelledException' && !cancelled) {
-          setRenderError('This page could not be rendered.');
-        }
+    const paint = () => {
+      if (cancelled || !canvasRef.current) return;
+      const context = canvas.getContext('2d', { alpha: false });
+      if (!context) return;
+      const pixelRatio = renderPixelRatio(cssViewport.width, cssViewport.height);
+      const viewport = page.getViewport({
+        scale: zoom * pixelRatio,
+        rotation: page.rotate + rotation,
       });
+      const width = Math.max(1, Math.floor(viewport.width));
+      const height = Math.max(1, Math.floor(viewport.height));
+
+      // Render into an offscreen bitmap and copy it in one go. Resizing the
+      // visible canvas first would blank the page for the whole render, which
+      // is exactly the flicker you see when zooming a heavy document.
+      const scratch = document.createElement('canvas');
+      scratch.width = width;
+      scratch.height = height;
+      const scratchContext = scratch.getContext('2d', { alpha: false });
+      if (!scratchContext) return;
+      scratchContext.fillStyle = '#ffffff';
+      scratchContext.fillRect(0, 0, width, height);
+      try {
+        task = page.render({ canvasContext: scratchContext, viewport });
+      } catch {
+        setRenderError('This page could not be rendered.');
+        return;
+      }
+      task.promise
+        .then(() => {
+          if (cancelled || !canvasRef.current) return;
+          const visible = canvasRef.current.getContext('2d', { alpha: false });
+          if (!visible) return;
+          if (canvasRef.current.width !== width || canvasRef.current.height !== height) {
+            canvasRef.current.width = width;
+            canvasRef.current.height = height;
+          }
+          visible.drawImage(scratch, 0, 0);
+          scratch.width = 0;
+          scratch.height = 0;
+          hasBitmap.current = true;
+          setRendered(true);
+          setRenderError(null);
+        })
+        .catch((error: unknown) => {
+          scratch.width = 0;
+          scratch.height = 0;
+          const name = (error as { name?: string })?.name;
+          if (name !== 'RenderingCancelledException' && !cancelled) {
+            setRenderError('This page could not be rendered.');
+          }
+        });
+    };
+
+    if (hasBitmap.current) {
+      timer = window.setTimeout(paint, RENDER_SETTLE_MS);
+    } else {
+      paint();
+    }
 
     return () => {
       cancelled = true;
-      renderTask?.cancel();
+      window.clearTimeout(timer);
+      task?.cancel();
     };
-  }, [geometry.height, geometry.width, nearViewport, page, rotation, zoom]);
+  }, [page, rotation, zoom, geometry.height, geometry.width]);
 
+  // The text layer is built once at the page's natural scale and then scaled
+  // with a CSS transform. Rebuilding it for every zoom step is one of the most
+  // expensive things a PDF reader can do while the user is scrolling or zooming.
   useEffect(() => {
-    if (!page || !textLayerRef.current || !nearViewport) return;
+    const container = textLayerRef.current;
+    if (!page || !container) return;
     let cancelled = false;
     let layer: TextLayer | null = null;
-    const container = textLayerRef.current;
     container.replaceChildren();
-    const viewport = viewportFor(page, zoom, rotation);
-    container.style.setProperty('--scale-factor', String(viewport.scale));
+    const baseViewport = page.getViewport({ scale: 1, rotation: page.rotate + rotation });
+    container.style.setProperty('--scale-factor', '1');
+    container.style.width = `${baseViewport.width}px`;
+    container.style.height = `${baseViewport.height}px`;
+    container.style.transform = `scale(${zoom})`;
 
-    page
-      .getTextContent()
+    getPageTextContent(page)
       .then((textContent) => {
         if (cancelled || !textLayerRef.current) return;
+        // Image-only (scanned) pages have nothing to select; skip the layer.
+        if (!textContent.items || textContent.items.length === 0) return;
         layer = new TextLayer({
           textContentSource: textContent,
           container: textLayerRef.current,
-          viewport,
+          viewport: baseViewport,
         });
         return layer.render();
       })
@@ -232,7 +253,13 @@ export function PdfPage({
       layer?.cancel();
       container.replaceChildren();
     };
-  }, [nearViewport, page, rotation, zoom]);
+  }, [page, rotation]);
+
+  useEffect(() => {
+    const container = textLayerRef.current;
+    if (!container || !page) return;
+    container.style.transform = `scale(${zoom})`;
+  }, [page, zoom]);
 
   const buildHighlight = useCallback(() => {
     if (tool !== 'highlight' || !page || !displayViewport || !pageRef.current) return;
@@ -478,4 +505,8 @@ export function PdfPage({
   );
 }
 
-
+/**
+ * Scroll updates re-render the viewer on every page boundary. Memoizing the
+ * page keeps that cheap: only the pages whose own props changed do any work.
+ */
+export const PdfPage = memo(PdfPageComponent);

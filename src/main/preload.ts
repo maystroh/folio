@@ -2,17 +2,27 @@ import { contextBridge, ipcRenderer } from 'electron';
 
 type Unsubscribe = () => void;
 
+export interface DocumentPayload {
+  kind: 'pdf' | 'workspace';
+  filePath: string | null;
+  fileName: string;
+  bytes: Uint8Array;
+  /** JSON with annotations, signatures and view; present for workspaces. */
+  meta?: string;
+}
+
 const api = {
-  openDocument: (): Promise<{ filePath: string; fileName: string; bytes: Uint8Array } | null> =>
-    ipcRenderer.invoke('dialog:open-document'),
-  readDocument: (filePath: string): Promise<{ filePath: string; fileName: string; bytes: Uint8Array }> =>
+  openDocument: (): Promise<DocumentPayload | null> => ipcRenderer.invoke('dialog:open-document'),
+  readDocument: (filePath: string): Promise<DocumentPayload> =>
     ipcRenderer.invoke('file:read-document', filePath),
-  getStartupFile: (): Promise<{ filePath: string; fileName: string; bytes: Uint8Array } | null> =>
-    ipcRenderer.invoke('app:startup-file'),
-  saveWorkspaceAs: (suggestedName: string, content: string): Promise<string | null> =>
-    ipcRenderer.invoke('dialog:save-workspace', suggestedName, content),
-  writeWorkspace: (filePath: string, content: string): Promise<string> =>
-    ipcRenderer.invoke('fs:write-workspace', filePath, content),
+  getStartupFile: (): Promise<DocumentPayload | null> => ipcRenderer.invoke('app:startup-file'),
+  saveWorkspace: (
+    filePath: string | null,
+    suggestedName: string,
+    metaJson: string,
+    pdfBytes: Uint8Array,
+  ): Promise<string | null> =>
+    ipcRenderer.invoke('workspace:save', filePath, suggestedName, metaJson, pdfBytes),
   exportPdf: (suggestedName: string, bytes: Uint8Array): Promise<string | null> =>
     ipcRenderer.invoke('dialog:export-pdf', suggestedName, bytes),
   saveImage: (suggestedName: string, dataUrl: string): Promise<string | null> =>

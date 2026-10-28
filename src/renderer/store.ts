@@ -154,10 +154,6 @@ function initialTheme(): Theme {
   return 'light';
 }
 
-function pageGeometryDefaults(count: number): PageGeometry[] {
-  return Array.from({ length: count }, () => ({ width: 612, height: 792, rotate: 0 }));
-}
-
 export const useFolio = create<FolioState>((set, get) => ({
   pdf: null,
   documentId: 0,
@@ -219,9 +215,7 @@ export const useFolio = create<FolioState>((set, get) => ({
         height: firstViewport.height,
         rotate: firstPage.rotate,
       };
-      const geometries = pageGeometryDefaults(loaded.pageCount).map((geometry, index) =>
-        index === 0 ? firstGeometry : geometry,
-      );
+      const geometries = Array.from({ length: loaded.pageCount }, () => ({ ...firstGeometry }));
       if (token !== documentToken) {
         void loaded.pdf.destroy();
         return;
@@ -236,7 +230,7 @@ export const useFolio = create<FolioState>((set, get) => ({
       const next: Partial<FolioState> = {
         pdf: loaded.pdf,
         documentId: token,
-        documentBytes: new Uint8Array(input.bytes),
+        documentBytes: input.bytes,
         fileName: input.fileName,
         filePath: input.filePath,
         workspacePath: input.workspacePath ?? null,
@@ -289,18 +283,37 @@ export const useFolio = create<FolioState>((set, get) => ({
     const pdf = get().pdf;
     if (!pdf) return;
     const count = pdf.numPages;
-    for (let pageNumber = 1; pageNumber <= count; pageNumber += 1) {
+    // Pages are inspected in batches: each `getPage` is a round-trip to the
+    // PDF.js worker, and applying every result as its own store update would
+    // re-render the whole reader once per page (thousands of times in a large
+    // book). Batching turns that into a handful of updates.
+    const BATCH = 48;
+    for (let start = 1; start <= count; start += BATCH) {
       if (token !== documentToken) return;
-      try {
-        const page = await pdf.getPage(pageNumber);
+      const end = Math.min(count, start + BATCH - 1);
+      const numbers: number[] = [];
+      for (let pageNumber = start; pageNumber <= end; pageNumber += 1) numbers.push(pageNumber);
+      const pages = await Promise.all(
+        numbers.map((pageNumber) =>
+          pdf.getPage(pageNumber).catch(() => null),
+        ),
+      );
+      if (token !== documentToken) return;
+      const updates = new Map<number, PageGeometry>();
+      for (let index = 0; index < pages.length; index += 1) {
+        const page = pages[index];
+        if (!page) continue;
         const viewport = page.getViewport({ scale: 1, rotation: page.rotate });
-        const geometry = {
+        updates.set(numbers[index], {
           width: viewport.width,
           height: viewport.height,
           rotate: page.rotate,
-        };
-        if (token !== documentToken) return;
-        set((state) => {
+        });
+      }
+      if (updates.size === 0) continue;
+      set((state) => {
+        let pageGeometries: PageGeometry[] | null = null;
+        for (const [pageNumber, geometry] of updates) {
           const existing = state.pageGeometries[pageNumber - 1];
           if (
             existing &&
@@ -308,15 +321,13 @@ export const useFolio = create<FolioState>((set, get) => ({
             Math.abs(existing.height - geometry.height) < 0.1 &&
             existing.rotate === geometry.rotate
           ) {
-            return state;
+            continue;
           }
-          const pageGeometries = state.pageGeometries.slice();
+          if (!pageGeometries) pageGeometries = state.pageGeometries.slice();
           pageGeometries[pageNumber - 1] = geometry;
-          return { pageGeometries };
-        });
-      } catch {
-        // A single malformed page should not prevent the rest from being usable.
-      }
+        }
+        return pageGeometries ? { pageGeometries } : state;
+      });
     }
   },
 
@@ -363,14 +374,10 @@ export const useFolio = create<FolioState>((set, get) => ({
 
   setZoom: (zoom) => {
     const next = clamp(Number(zoom.toFixed(3)), 0.25, 4);
-    set((state) => ({
-      zoom: next,
-      zoomMode: 'custom',
-      navigationTarget: {
-        page: state.currentPage,
-        nonce: (state.navigationTarget?.nonce ?? 0) + 1,
-      },
-    }));
+    if (next === get().zoom && get().zoomMode === 'custom') return;
+    // The viewer keeps the reader anchored on the same spot of the page, so
+    // zooming must not queue a navigation jump as well.
+    set({ zoom: next, zoomMode: 'custom' });
   },
 
   zoomIn: () => {

@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { useFolio } from '../store';
-import { baseName, createWorkspace, base64ToBytes, parseWorkspace } from '../pdf/workspace';
+import {
+  baseName,
+  base64ToBytes,
+  parseWorkspace,
+  parseWorkspaceMeta,
+} from '../pdf/workspace';
 import { exportAnnotatedPdf } from '../export/exportPdf';
 
 type PendingAction =
@@ -10,9 +15,18 @@ type PendingAction =
   | { type: 'close' };
 
 interface NativeDocumentResult {
+  kind?: 'pdf' | 'workspace';
   filePath: string | null;
   fileName: string;
   bytes: Uint8Array;
+  meta?: string;
+}
+
+interface RestoredWorkspace {
+  fileName: string;
+  annotations: ReturnType<typeof parseWorkspaceMeta>['annotations'];
+  signatures: ReturnType<typeof parseWorkspaceMeta>['signatures'];
+  view: ReturnType<typeof parseWorkspaceMeta>['view'];
 }
 
 export function useDocumentIO() {
@@ -21,28 +35,43 @@ export function useDocumentIO() {
   const pendingRef = useRef<PendingAction | null>(null);
   pendingRef.current = pendingAction;
 
+  const openWorkspaceBytes = async (
+    workspace: RestoredWorkspace,
+    result: NativeDocumentResult,
+    pdfBytes: Uint8Array,
+  ) => {
+    await useFolio.getState().loadDocument({
+      bytes: pdfBytes,
+      fileName: workspace.fileName,
+      filePath: null,
+      workspacePath: result.filePath || null,
+      restore: {
+        annotations: workspace.annotations,
+        signatures: workspace.signatures,
+        view: workspace.view,
+      },
+    });
+    if (useFolio.getState().pdf) {
+      useFolio.getState().showToast('Workspace restored with its annotations.', 'success');
+    }
+  };
+
   const loadNativeResult = async (result: NativeDocumentResult) => {
-    const state = useFolio.getState();
     const lower = result.fileName.toLowerCase();
-    if (lower.endsWith('.folio')) {
+    const isWorkspace = result.kind === 'workspace' || lower.endsWith('.folio');
+    if (isWorkspace) {
       try {
+        if (result.meta) {
+          // The main process already decoded the PDF and the metadata JSON.
+          const workspace = parseWorkspaceMeta(result.fileName, result.meta);
+          await openWorkspaceBytes(workspace, result, result.bytes);
+          return;
+        }
+        // Dropped files arrive without a native path; parse them here.
         const text = new TextDecoder().decode(result.bytes);
         const workspace = parseWorkspace(text);
         const pdfBytes = base64ToBytes(workspace.pdfBase64);
-        await state.loadDocument({
-          bytes: pdfBytes,
-          fileName: workspace.fileName,
-          filePath: null,
-          workspacePath: result.filePath || null,
-          restore: {
-            annotations: workspace.annotations,
-            signatures: workspace.signatures,
-            view: workspace.view,
-          },
-        });
-        if (useFolio.getState().pdf) {
-          useFolio.getState().showToast('Workspace restored with its annotations.', 'success');
-        }
+        await openWorkspaceBytes(workspace, result, pdfBytes);
       } catch (error) {
         const message = error instanceof Error ? error.message : 'The workspace could not be opened.';
         useFolio.getState().setError(message);
@@ -51,7 +80,7 @@ export function useDocumentIO() {
       return;
     }
 
-    await state.loadDocument({
+    await useFolio.getState().loadDocument({
       bytes: result.bytes,
       fileName: result.fileName,
       filePath: result.filePath,
@@ -141,26 +170,24 @@ export function useDocumentIO() {
     if (!state.pdf || !state.documentBytes) return false;
     state.setBusy('Saving workspace');
     try {
-      const workspace = createWorkspace({
+      // The PDF bytes stay binary all the way to disk: the main process streams
+      // the base64 payload while the renderer stays responsive.
+      const meta = JSON.stringify({
+        savedAt: new Date().toISOString(),
         fileName: state.fileName,
-        bytes: state.documentBytes,
         annotations: state.annotations,
         signatures: state.signatures,
         view: state.viewForSave(),
       });
-      const contents = JSON.stringify(workspace);
-      let target = state.workspacePath;
-      if (saveAs || !target) {
-        target = await window.folio.saveWorkspaceAs(
-          `${baseName(state.fileName)}.folio`,
-          contents,
-        );
-        if (!target) {
-          state.setBusy(null);
-          return false;
-        }
-      } else {
-        target = await window.folio.writeWorkspace(target, contents);
+      const target = await window.folio.saveWorkspace(
+        saveAs ? null : state.workspacePath,
+        `${baseName(state.fileName)}.folio`,
+        meta,
+        state.documentBytes,
+      );
+      if (!target) {
+        state.setBusy(null);
+        return false;
       }
       useFolio.getState().markSaved(target);
       useFolio.getState().showToast(

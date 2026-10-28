@@ -58,8 +58,8 @@ npm run dist
 
 This produces:
 
-- `release/Folio-1.0.0-Windows/` — ready-to-use extracted setup folder
-- `release/Folio-1.0.0-Windows.zip` — shareable setup package
+- `release/Folio-1.1.0-Windows/` — ready-to-use extracted setup folder
+- `release/Folio-1.1.0-Windows.zip` — shareable setup package
 
 The setup is **script-based and deliberately avoids NSIS and Windows Installer**. Some Windows security configurations block NSIS/MSI installers from creating their temporary files or from running unsigned helper executables. This package only uses Windows Script Host and PowerShell, which do not need administrator access or an installer service.
 
@@ -67,7 +67,7 @@ The build is unsigned, so Windows SmartScreen may show an “unknown publisher�
 
 ## Install on Windows
 
-1. Extract `release/Folio-1.0.0-Windows.zip`.
+1. Extract `release/Folio-1.1.0-Windows.zip`.
 2. Run **`Install Folio.cmd`** from the extracted folder.
 3. Folio installs per-user in `%LOCALAPPDATA%\Programs\Folio`, creates Desktop and Start Menu shortcuts, and registers an optional “Open with” entry for `.pdf` and `.folio` files.
 
@@ -125,14 +125,15 @@ src/
     App.tsx          Application shell, drag/drop, keyboard shortcuts, print flow
     store.ts         Zustand document, view, selection, signature and dirty state
     pdf/
-      pdfjs.ts       PDF.js loading and page rendering
+      pdfjs.ts       PDF.js loading, text-content cache, render helpers
+      layout.ts      Virtualized page-stack geometry, scroll and anchor math
       geometry.ts    Screen <-> PDF coordinate transforms, including rotation
       outline.ts     Recursive PDF outline resolution
       workspace.ts   .folio serialization and validation
     annotations/
       types.ts       Annotation and signature types plus palettes
     components/
-      PdfViewer.tsx  Continuous page scroller and current-page tracking
+      PdfViewer.tsx  Virtualized page scroller, zoom anchoring, current-page tracking
       PdfPage.tsx    Lazy page rendering, PDF.js text layer, selection-to-highlight
       AnnotationLayer.tsx  Highlights, ink, notes, signature transforms, drag/resize
       Sidebar.tsx / ThumbnailPanel.tsx / OutlinePanel.tsx
@@ -146,7 +147,17 @@ src/
 
 Annotations are stored in **PDF user-space points**, not screen pixels. A rectangle is converted through the live PDF.js viewport at every zoom, fit, scroll, and rotation. This keeps every mark in the same place regardless of how the page is displayed. Notes and signatures are painted with an affine transform for rotated pages. Export writes those same PDF-space coordinates into a standard PDF with pdf-lib.
 
-Saving uses a self-contained JSON `.folio` file. The original PDF bytes are base64-encoded inside it so a workspace can be moved to another computer without losing the document. The renderer retains a separate copy of the PDF bytes for export.
+Saving uses a self-contained JSON `.folio` file. The original PDF bytes are base64-encoded inside it so a workspace can be moved to another computer without losing the document. The renderer retains a separate copy of the PDF bytes for export. The main process writes (and reads) that file by streaming the base64 payload, so a 40 MB book never has to be turned into one giant string on the UI thread.
+
+### Large documents
+
+Folio is designed to read books, so the reader is virtualized:
+
+- Only the pages around the viewport exist in the DOM, and only those pages hold a canvas. Scroll position, page jumps and the current page are computed from the page geometry (`pdf/layout.ts`) instead of measured from the DOM, so scrolling costs one binary search per frame instead of one layout read per page.
+- Zoom, rotation and page-size changes keep the reader anchored on the spot under the viewport instead of jumping. A repaint waits briefly for the gesture to settle and is composited from an offscreen bitmap, so pages never flash white while zooming.
+- The text layer is built once per page at the page's natural scale and scaled with CSS, so it survives zooming without being rebuilt.
+- Thumbnails are virtualized and rendered at thumbnail resolution; pages that scroll far out of view release their raster state.
+
 
 ## Testing
 

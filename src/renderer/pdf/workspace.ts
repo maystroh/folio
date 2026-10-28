@@ -51,6 +51,40 @@ export function parseWorkspace(text: string): WorkspaceFile {
   if (typeof parsed.pdfBase64 !== 'string' || parsed.pdfBase64.length === 0) {
     throw new Error('This Folio workspace is missing its PDF document.');
   }
+  return {
+    app: 'Folio',
+    version: 1,
+    savedAt: typeof parsed.savedAt === 'string' ? parsed.savedAt : new Date().toISOString(),
+    fileName: typeof parsed.fileName === 'string' ? parsed.fileName : 'Untitled.pdf',
+    pdfBase64: parsed.pdfBase64,
+    ...parseWorkspaceMetaFields(parsed),
+  };
+}
+
+/**
+ * The main process reads `.folio` files and hands the renderer only the small
+ * annotation payload plus the decoded PDF bytes, so opening a workspace never
+ * parses a thirty-megabyte JSON string (and base64 blob) on the UI thread.
+ */
+export function parseWorkspaceMeta(
+  fileName: string,
+  metaJson: string,
+): { fileName: string; annotations: Annotation[]; signatures: SignatureAsset[]; view: WorkspaceFile['view'] } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(metaJson);
+  } catch {
+    throw new Error('This Folio workspace is missing its annotations.');
+  }
+  if (!isRecord(parsed)) throw new Error('This Folio workspace is missing its annotations.');
+  return { fileName, ...parseWorkspaceMetaFields(parsed) };
+}
+
+function parseWorkspaceMetaFields(parsed: Record<string, unknown>): {
+  annotations: Annotation[];
+  signatures: SignatureAsset[];
+  view: WorkspaceFile['view'];
+} {
   const annotations = Array.isArray(parsed.annotations)
     ? parsed.annotations.filter(isAnnotation)
     : [];
@@ -59,11 +93,6 @@ export function parseWorkspace(text: string): WorkspaceFile {
     : [];
   const view = isRecord(parsed.view) ? parsed.view : {};
   return {
-    app: 'Folio',
-    version: 1,
-    savedAt: typeof parsed.savedAt === 'string' ? parsed.savedAt : new Date().toISOString(),
-    fileName: typeof parsed.fileName === 'string' ? parsed.fileName : 'Untitled.pdf',
-    pdfBase64: parsed.pdfBase64,
     annotations,
     signatures,
     view: {

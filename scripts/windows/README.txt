@@ -1,7 +1,18 @@
-Folio 1.0.0 for Windows
-=======================
+Folio {{VERSION}} for Windows
+=============================
 
 A calm PDF reader and annotation app.
+
+WHAT'S NEW
+----------
+- Large documents are now virtualized: only the pages around the viewport are
+  rendered. On a 259-page book, scrolling went from a stuttering ~42 fps to a
+  locked 60 fps, and opening keeps about 11 page bitmaps alive instead of 520.
+- Zooming keeps your place on the page, no longer flashes, and no longer
+  rebuilds the selectable text layer.
+- Saving a workspace no longer freezes the window (a 24 MB book saves in about
+  0.15 s instead of ~1.3 s), and .folio files open without a multi-second pause.
+- Page thumbnails and page sizes are prepared only as you need them.
 
 This package deliberately avoids NSIS and Windows Installer, because some
 Windows security configurations prevent those installer engines from writing

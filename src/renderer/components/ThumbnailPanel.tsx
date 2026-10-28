@@ -1,66 +1,50 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import { useFolio } from '../store';
-import type { PageGeometry } from '../store';
 import { pageDisplaySize } from '../pdf/geometry';
+
+const THUMB_WIDTH = 132;
+const THUMB_MAX_HEIGHT = 178;
+/** Item chrome: padding 6 + 5, gap 6, page number line 14. */
+const ITEM_CHROME = 31;
+const ITEM_GAP = 10;
+const VIRTUALIZE_ABOVE = 24;
 
 interface ThumbnailProps {
   pdf: PDFDocumentProxy;
   pageNumber: number;
-  geometry: PageGeometry;
   rotation: number;
+  frameHeight: number;
   active: boolean;
   theme: 'light' | 'dark';
-  scrollRoot: HTMLElement | null;
   onClick: () => void;
 }
 
 function Thumbnail({
   pdf,
   pageNumber,
-  geometry,
   rotation,
+  frameHeight,
   active,
   theme,
-  scrollRoot,
   onClick,
 }: ThumbnailProps) {
   const wrapperRef = useRef<HTMLButtonElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [visible, setVisible] = useState(pageNumber <= 5);
   const [rendered, setRendered] = useState(false);
-  const displaySize = pageDisplaySize(geometry.width, geometry.height, rotation);
 
   useEffect(() => {
-    if (!scrollRoot || !wrapperRef.current) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) setVisible(true);
-      },
-      { root: scrollRoot, rootMargin: '500px 0px', threshold: 0.001 },
-    );
-    observer.observe(wrapperRef.current);
-    return () => observer.disconnect();
-  }, [scrollRoot]);
-
-  useEffect(() => {
-    if (!visible) return;
     let cancelled = false;
     let task: { cancel: () => void; promise: Promise<unknown> } | null = null;
     const canvas = canvasRef.current;
     if (!canvas) return;
-    setRendered(false);
-    setRendered(false);
     const render = async () => {
       const page = await pdf.getPage(pageNumber);
-      if (cancelled) return;
+      if (cancelled || !canvasRef.current) return;
       const base = page.getViewport({ scale: 1, rotation: page.rotate + rotation });
-      const scale = Math.min(132 / base.width, 178 / base.height);
-      const pixelRatio = Math.min(Math.max(window.devicePixelRatio || 1, 1), 2);
-      const viewport = page.getViewport({
-        scale: scale * pixelRatio,
-        rotation: page.rotate + rotation,
-      });
+      const pixelRatio = Math.min(Math.max(window.devicePixelRatio || 1, 1), 1.5);
+      const scale = (THUMB_WIDTH / base.width) * pixelRatio;
+      const viewport = page.getViewport({ scale, rotation: page.rotate + rotation });
       const context = canvas.getContext('2d', { alpha: false });
       if (!context) return;
       canvas.width = Math.max(1, Math.floor(viewport.width));
@@ -79,11 +63,7 @@ function Thumbnail({
       cancelled = true;
       task?.cancel();
     };
-  }, [pageNumber, pdf, rotation, visible]);
-
-  useEffect(() => {
-    if (active) wrapperRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-  }, [active]);
+  }, [pageNumber, pdf, rotation]);
 
   return (
     <button
@@ -94,10 +74,11 @@ function Thumbnail({
       data-thumb-page={pageNumber}
       aria-current={active ? 'page' : undefined}
       title={`Go to page ${pageNumber}`}
+      style={{ height: frameHeight + ITEM_CHROME }}
     >
       <span
         className={`thumbnail-frame ${theme === 'dark' ? 'dark' : ''}`}
-        style={{ aspectRatio: `${displaySize.width} / ${displaySize.height}` }}
+        style={{ height: frameHeight }}
       >
         <canvas
           ref={canvasRef}
@@ -121,31 +102,126 @@ export function ThumbnailPanel() {
   const theme = useFolio((state) => state.theme);
   const goToPage = useFolio((state) => state.goToPage);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const [scrollRoot, setScrollRoot] = useState<HTMLDivElement | null>(null);
+  const frameRef = useRef<number | null>(null);
+  const [viewportHeight, setViewportHeight] = useState(0);
+  const [range, setRange] = useState<{ start: number; end: number }>({ start: 0, end: -1 });
 
-  useEffect(() => setScrollRoot(scrollRef.current), []);
+  const layout = useMemo(() => {
+    const frameHeights = new Float64Array(pageCount);
+    const tops = new Float64Array(pageCount);
+    let cursor = 0;
+    for (let index = 0; index < pageCount; index += 1) {
+      const geometry = pageGeometries[index] ?? { width: 612, height: 792, rotate: 0 };
+      const size = pageDisplaySize(geometry.width, geometry.height, rotation);
+      const frameHeight = Math.min(THUMB_WIDTH * (size.height / size.width), THUMB_MAX_HEIGHT);
+      frameHeights[index] = frameHeight;
+      tops[index] = cursor;
+      cursor += frameHeight + ITEM_CHROME + ITEM_GAP;
+    }
+    return { frameHeights, tops, total: cursor };
+  }, [pageCount, pageGeometries, rotation]);
+  const layoutRef = useRef(layout);
+  layoutRef.current = layout;
+
+  const syncRange = useCallback(() => {
+    const scroll = scrollRef.current;
+    if (!scroll) return;
+    if (layoutRef.current.tops.length === 0) return;
+    const top = scroll.scrollTop;
+    const height = scroll.clientHeight;
+    const overscan = 700;
+    const tops = layoutRef.current.tops;
+    let start = 0;
+    // Last item whose top is above the overscan start.
+    let low = 0;
+    let high = tops.length - 1;
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      if (tops[mid] <= Math.max(0, top - overscan)) {
+        start = mid;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    let end = start;
+    const limit = top + height + overscan;
+    while (end < tops.length - 1 && tops[end + 1] <= limit) end += 1;
+    setRange((current) =>
+      current.start === start && current.end === end ? current : { start, end },
+    );
+  }, []);
+
+  const handleScroll = useCallback(() => {
+    if (frameRef.current !== null) return;
+    frameRef.current = window.requestAnimationFrame(() => {
+      frameRef.current = null;
+      syncRange();
+    });
+  }, [syncRange]);
+
+  useEffect(() => {
+    const element = scrollRef.current;
+    if (!element) return;
+    const observer = new ResizeObserver(() => setViewportHeight(element.clientHeight));
+    observer.observe(element);
+    setViewportHeight(element.clientHeight);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    syncRange();
+  }, [layout, syncRange, viewportHeight]);
+
+  // Keep the active page visible without fighting the user's own scrolling and
+  // without a smooth-scroll animation on every page turn.
+  useEffect(() => {
+    const scroll = scrollRef.current;
+    if (!scroll || pageCount === 0) return;
+    const index = currentPage - 1;
+    const top = layoutRef.current.tops[index] ?? 0;
+    const bottom = top + layoutRef.current.frameHeights[index] + ITEM_CHROME;
+    if (top < scroll.scrollTop || bottom > scroll.scrollTop + scroll.clientHeight) {
+      scroll.scrollTop = Math.max(0, top - scroll.clientHeight / 2 + 60);
+      syncRange();
+    }
+  }, [currentPage, pageCount, syncRange]);
 
   if (!pdf) return null;
 
+  const virtualize = pageCount > VIRTUALIZE_ABOVE;
+  const start = virtualize ? Math.min(range.start, pageCount - 1) : 0;
+  const end = virtualize ? Math.min(Math.max(range.end, start), pageCount - 1) : pageCount - 1;
+  const before = virtualize ? layout.tops[start] ?? 0 : 0;
+  const after = virtualize
+    ? Math.max(
+        0,
+        layout.total - ((layout.tops[end] ?? 0) + layout.frameHeights[end] + ITEM_CHROME + ITEM_GAP),
+      )
+    : 0;
+
+  const items = [];
+  for (let pageNumber = start + 1; pageNumber <= end + 1; pageNumber += 1) {
+    items.push(
+      <Thumbnail
+        key={pageNumber}
+        pdf={pdf}
+        pageNumber={pageNumber}
+        rotation={rotation}
+        frameHeight={layout.frameHeights[pageNumber - 1]}
+        active={currentPage === pageNumber}
+        theme={theme}
+        onClick={() => goToPage(pageNumber)}
+      />,
+    );
+  }
+
   return (
-    <div className="thumbnail-scroll" ref={scrollRef}>
+    <div className="thumbnail-scroll" ref={scrollRef} onScroll={handleScroll}>
       <div className="thumbnail-grid">
-        {Array.from({ length: pageCount }, (_, index) => {
-          const pageNumber = index + 1;
-          return (
-            <Thumbnail
-              key={pageNumber}
-              pdf={pdf}
-              pageNumber={pageNumber}
-              geometry={pageGeometries[index] ?? { width: 612, height: 792, rotate: 0 }}
-              rotation={rotation}
-              active={currentPage === pageNumber}
-              theme={theme}
-              scrollRoot={scrollRoot}
-              onClick={() => goToPage(pageNumber)}
-            />
-          );
-        })}
+        {before > 0 && <div className="thumbnail-spacer" style={{ height: before }} />}
+        {items}
+        {after > 0 && <div className="thumbnail-spacer" style={{ height: after }} />}
       </div>
     </div>
   );

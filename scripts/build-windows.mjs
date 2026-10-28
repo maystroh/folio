@@ -70,9 +70,19 @@ fs.rmSync(packageFolder, { recursive: true, force: true });
 fs.mkdirSync(packageFolder, { recursive: true });
 fs.renameSync(unpacked, path.join(packageFolder, 'app'));
 
-for (const file of ['Install Folio.cmd', 'install-folio.ps1', 'README.txt']) {
-  fs.copyFileSync(path.join(windowsScripts, file), path.join(packageFolder, file));
+/**
+ * The installer and its README are templates: the version in the banner and in
+ * the uninstall registry entry always follows package.json, so a new release
+ * can never ship with a stale version label.
+ */
+function copyTemplate(file, destination) {
+  const contents = fs.readFileSync(path.join(windowsScripts, file), 'utf8');
+  fs.writeFileSync(destination, contents.replaceAll('{{VERSION}}', version), 'utf8');
 }
+
+fs.copyFileSync(path.join(windowsScripts, 'Install Folio.cmd'), path.join(packageFolder, 'Install Folio.cmd'));
+copyTemplate('install-folio.ps1', path.join(packageFolder, 'install-folio.ps1'));
+copyTemplate('README.txt', path.join(packageFolder, 'README.txt'));
 
 console.log('\n[3/3] Creating the shareable ZIP');
 const archive = path.join(release, `Folio-${version}-Windows.zip`);

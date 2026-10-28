@@ -51,7 +51,7 @@ try {
     }
 
     Write-Host ''
-    Write-Host '  Folio 1.0.0' -ForegroundColor DarkYellow
+    Write-Host '  Folio {{VERSION}}' -ForegroundColor DarkYellow
     Write-Host '  A calm PDF reader and annotation app for Windows.' -ForegroundColor DarkGray
     Write-Host ''
 
@@ -136,7 +136,7 @@ try {
         $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Folio'
         New-Item -Path $uninstallKey -Force | Out-Null
         New-ItemProperty -Path $uninstallKey -Name 'DisplayName' -Value 'Folio' -PropertyType String -Force | Out-Null
-        New-ItemProperty -Path $uninstallKey -Name 'DisplayVersion' -Value '1.0.0' -PropertyType String -Force | Out-Null
+        New-ItemProperty -Path $uninstallKey -Name 'DisplayVersion' -Value '{{VERSION}}' -PropertyType String -Force | Out-Null
         New-ItemProperty -Path $uninstallKey -Name 'Publisher' -Value 'Folio' -PropertyType String -Force | Out-Null
         New-ItemProperty -Path $uninstallKey -Name 'InstallLocation' -Value $target -PropertyType String -Force | Out-Null
         New-ItemProperty -Path $uninstallKey -Name 'DisplayIcon' -Value ($icon + ',0') -PropertyType String -Force | Out-Null

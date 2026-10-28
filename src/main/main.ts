@@ -188,12 +188,78 @@ function startupFile(): string | null {
 }
 
 async function readDocumentFile(filePath: string) {
-  const bytes = await fs.readFile(filePath);
+  if (!/\.folio$/i.test(filePath)) {
+    const bytes = await fs.readFile(filePath);
+    return {
+      kind: 'pdf' as const,
+      filePath,
+      fileName: path.basename(filePath),
+      bytes: new Uint8Array(bytes),
+    };
+  }
+
+  // A workspace embeds the whole PDF as base64. Parsing it here keeps a
+  // multi-second, multi-hundred-megabyte string operation off the UI process.
+  const raw = await fs.readFile(filePath, 'utf8');
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    throw new Error('This Folio workspace is not valid JSON.');
+  }
+  if (!parsed || parsed.app !== 'Folio' || parsed.version !== 1) {
+    throw new Error('This file is not a supported Folio workspace.');
+  }
+  if (typeof parsed.pdfBase64 !== 'string' || parsed.pdfBase64.length === 0) {
+    throw new Error('This Folio workspace is missing its PDF document.');
+  }
+  const bytes = Buffer.from(parsed.pdfBase64, 'base64');
   return {
+    kind: 'workspace' as const,
     filePath,
-    fileName: path.basename(filePath),
-    bytes: new Uint8Array(bytes),
+    fileName: typeof parsed.fileName === 'string' ? parsed.fileName : 'Untitled.pdf',
+    bytes: new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength),
+    meta: JSON.stringify({
+      annotations: Array.isArray(parsed.annotations) ? parsed.annotations : [],
+      signatures: Array.isArray(parsed.signatures) ? parsed.signatures : [],
+      view: parsed.view && typeof parsed.view === 'object' ? parsed.view : {},
+    }),
   };
+}
+
+const WORKSPACE_CHUNK = 3 * 1024 * 1024;
+
+async function writeWorkspaceFile(target: string, metaJson: string, pdfBytes: Uint8Array) {
+  let meta: Record<string, unknown>;
+  try {
+    meta = JSON.parse(metaJson) as Record<string, unknown>;
+  } catch {
+    throw new Error('The workspace metadata could not be written.');
+  }
+  // JSON.stringify of everything except the PDF, then the base64 payload is
+  // streamed in aligned chunks so the main process never builds one giant
+  // string for a large book.
+  const head = JSON.stringify({
+    app: 'Folio',
+    version: 1,
+    savedAt: typeof meta.savedAt === 'string' ? meta.savedAt : new Date().toISOString(),
+    fileName: typeof meta.fileName === 'string' ? meta.fileName : 'Untitled.pdf',
+    annotations: Array.isArray(meta.annotations) ? meta.annotations : [],
+    signatures: Array.isArray(meta.signatures) ? meta.signatures : [],
+    view: meta.view && typeof meta.view === 'object' ? meta.view : {},
+  });
+  const payload = Buffer.from(pdfBytes.buffer, pdfBytes.byteOffset, pdfBytes.byteLength);
+  const handle = await fs.open(target, 'w');
+  try {
+    await handle.write(`${head.slice(0, -1)},"pdfBase64":"`);
+    for (let offset = 0; offset < payload.length; offset += WORKSPACE_CHUNK) {
+      const chunk = payload.subarray(offset, Math.min(offset + WORKSPACE_CHUNK, payload.length));
+      await handle.write(chunk.toString('base64'));
+    }
+    await handle.write('"}');
+  } finally {
+    await handle.close();
+  }
 }
 
 if (hasSingleInstanceLock) app.whenReady().then(() => {
@@ -237,27 +303,35 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
     }
   });
 
-  ipcMain.handle('dialog:save-workspace', async (_event, suggestedName: string, content: string) => {
-    const automatedPath = testSavePath(process.env.FOLIO_TEST_SAVE_DIR ?? '', suggestedName);
-    if (automatedPath) {
-      await fs.writeFile(automatedPath, content, 'utf8');
-      return automatedPath;
-    }
-    if (!mainWindow) return null;
-    const result = await dialog.showSaveDialog(mainWindow, {
-      title: 'Save Folio workspace',
-      defaultPath: suggestedName,
-      filters: [{ name: 'Folio workspace', extensions: ['folio'] }],
-    });
-    if (result.canceled || !result.filePath) return null;
-    await fs.writeFile(result.filePath, content, 'utf8');
-    return result.filePath;
-  });
-
-  ipcMain.handle('fs:write-workspace', async (_event, filePath: string, content: string) => {
-    await fs.writeFile(filePath, content, 'utf8');
-    return filePath;
-  });
+  ipcMain.handle(
+    'workspace:save',
+    async (
+      _event,
+      targetPath: string | null,
+      suggestedName: string,
+      metaJson: string,
+      pdfBytes: Uint8Array,
+    ) => {
+      let target = targetPath ?? '';
+      if (!target) {
+        const automatedPath = testSavePath(process.env.FOLIO_TEST_SAVE_DIR ?? '', suggestedName);
+        if (automatedPath) {
+          target = automatedPath;
+        } else {
+          if (!mainWindow) return null;
+          const result = await dialog.showSaveDialog(mainWindow, {
+            title: 'Save Folio workspace',
+            defaultPath: suggestedName,
+            filters: [{ name: 'Folio workspace', extensions: ['folio'] }],
+          });
+          if (result.canceled || !result.filePath) return null;
+          target = result.filePath;
+        }
+      }
+      await writeWorkspaceFile(target, metaJson, pdfBytes);
+      return target;
+    },
+  );
 
   ipcMain.handle('dialog:export-pdf', async (_event, suggestedName: string, bytes: Uint8Array) => {
     const automatedPath = testSavePath(process.env.FOLIO_TEST_SAVE_DIR ?? '', suggestedName);

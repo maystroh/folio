@@ -1,11 +1,24 @@
 /// <reference types="vite/client" />
 
+export interface FolioDocumentPayload {
+  kind: 'pdf' | 'workspace';
+  filePath: string | null;
+  fileName: string;
+  bytes: Uint8Array;
+  /** JSON with annotations, signatures and view; present for workspaces. */
+  meta?: string;
+}
+
 export interface FolioBridge {
-  openDocument: () => Promise<{ filePath: string; fileName: string; bytes: Uint8Array } | null>;
-  readDocument: (filePath: string) => Promise<{ filePath: string; fileName: string; bytes: Uint8Array }>;
-  getStartupFile: () => Promise<{ filePath: string; fileName: string; bytes: Uint8Array } | null>;
-  saveWorkspaceAs: (suggestedName: string, content: string) => Promise<string | null>;
-  writeWorkspace: (filePath: string, content: string) => Promise<string>;
+  openDocument: () => Promise<FolioDocumentPayload | null>;
+  readDocument: (filePath: string) => Promise<FolioDocumentPayload>;
+  getStartupFile: () => Promise<FolioDocumentPayload | null>;
+  saveWorkspace: (
+    filePath: string | null,
+    suggestedName: string,
+    metaJson: string,
+    pdfBytes: Uint8Array,
+  ) => Promise<string | null>;
   exportPdf: (suggestedName: string, bytes: Uint8Array) => Promise<string | null>;
   saveImage: (suggestedName: string, dataUrl: string) => Promise<string | null>;
   printDocument: () => Promise<{ success: boolean; error?: string }>;

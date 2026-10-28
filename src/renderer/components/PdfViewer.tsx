@@ -1,7 +1,17 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import type { PDFPageProxy } from 'pdfjs-dist';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useFolio } from '../store';
+import type { Annotation } from '../annotations/types';
+import {
+  anchorAt,
+  buildPageLayout,
+  spaceAfter,
+  spaceBefore,
+  VIRTUALIZE_ABOVE,
+  type PageLayout,
+} from '../pdf/layout';
 import { PdfPage } from './PdfPage';
+
+const EMPTY_ANNOTATIONS: Annotation[] = [];
 
 export function PdfViewer() {
   const pdf = useFolio((state) => state.pdf);
@@ -19,32 +29,58 @@ export function PdfViewer() {
   const setCurrentPage = useFolio((state) => state.setCurrentPage);
   const clearNavigationTarget = useFolio((state) => state.clearNavigationTarget);
   const fitPage = useFolio((state) => state.fitPage);
-  const setZoom = useFolio((state) => state.setZoom);
 
   const scrollRef = useRef<HTMLDivElement>(null);
-  const pageElements = useRef(new Map<number, HTMLDivElement>());
   const scrollFrame = useRef<number | null>(null);
-  const [scrollRoot, setScrollRoot] = useState<HTMLDivElement | null>(null);
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
-  const [pageCache, setPageCache] = useState<Map<number, PDFPageProxy>>(new Map());
+  const [range, setRange] = useState<{ start: number; end: number }>({ start: 0, end: -1 });
 
-  useEffect(() => {
-    setScrollRoot(scrollRef.current);
-  }, []);
+  const layout = useMemo(
+    () => buildPageLayout(pageGeometries, pageCount, zoom, rotation),
+    [pageCount, pageGeometries, rotation, zoom],
+  );
+  const layoutRef = useRef<PageLayout>(layout);
+  layoutRef.current = layout;
 
-  const registerPage = useCallback((page: number, element: HTMLDivElement | null) => {
-    if (element) pageElements.current.set(page, element);
-    else pageElements.current.delete(page);
-  }, []);
+  const previousLayout = useRef(layout);
+  const previousZoom = useRef(zoom);
+  const previousRotation = useRef(rotation);
 
-  const handlePageReady = useCallback((pageNumber: number, page: PDFPageProxy) => {
-    setPageCache((current) => {
-      if (current.get(pageNumber) === page) return current;
-      const next = new Map(current);
-      next.set(pageNumber, page);
-      return next;
+  const annotationsByPage = useMemo(() => {
+    const grouped = new Map<number, Annotation[]>();
+    for (const annotation of annotations) {
+      const list = grouped.get(annotation.page);
+      if (list) list.push(annotation);
+      else grouped.set(annotation.page, [annotation]);
+    }
+    return grouped;
+  }, [annotations]);
+
+  const syncViewportState = useCallback(() => {
+    const scroll = scrollRef.current;
+    if (!scroll) return;
+    const active = layoutRef.current;
+    const top = scroll.scrollTop;
+    const overscan = Math.max(1600, scroll.clientHeight * 1.2);
+    const next = active.rangeFor(top, scroll.clientHeight, overscan);
+    setRange((current) =>
+      current.start === next[0] && current.end === next[1]
+        ? current
+        : { start: next[0], end: next[1] },
+    );
+
+    let page = active.pageAt(top + Math.min(scroll.clientHeight * 0.3, 220)) + 1;
+    if (top + scroll.clientHeight >= scroll.scrollHeight - 4) page = pageCount;
+    setCurrentPage(page);
+  }, [pageCount, setCurrentPage]);
+
+  const handleScroll = useCallback(() => {
+    if (scrollFrame.current !== null) return;
+    scrollFrame.current = window.requestAnimationFrame(() => {
+      scrollFrame.current = null;
+      syncViewportState();
     });
-  }, []);
+  }, [syncViewportState]);
 
   useEffect(() => {
     const element = scrollRef.current;
@@ -56,6 +92,31 @@ export function PdfViewer() {
     setViewportSize({ width: element.clientWidth, height: element.clientHeight });
     return () => observer.disconnect();
   }, []);
+
+  // Keep the same spot of the same page under the reader while the zoom or the
+  // rotation changes. This runs before the window sync below so the scroll
+  // position is already corrected when the rendered range is recomputed.
+  useLayoutEffect(() => {
+    const scroll = scrollRef.current;
+    const before = previousLayout.current;
+    const zoomChanged = previousZoom.current !== zoom;
+    const rotationChanged = previousRotation.current !== rotation;
+    previousLayout.current = layout;
+    previousZoom.current = zoom;
+    previousRotation.current = rotation;
+    if (!scroll || (!zoomChanged && !rotationChanged) || before.tops.length === 0) return;
+    const anchor = anchorAt(before, scroll.scrollTop);
+    if (!anchor) return;
+    const index = Math.min(anchor.index, layout.tops.length - 1);
+    const target = layout.tops[index] + anchor.fraction * layout.heights[index] - 1;
+    scroll.scrollTop = Math.max(0, target);
+  }, [layout, rotation, zoom]);
+
+  // Recompute the rendered window whenever the geometry of the stack changes
+  // (zoom, rotation, page sizes) or the viewport resizes.
+  useLayoutEffect(() => {
+    syncViewportState();
+  }, [layout, syncViewportState, viewportSize.height, viewportSize.width]);
 
   useEffect(() => {
     if (!pdf || zoomMode !== 'fit-page' || viewportSize.width === 0) return;
@@ -78,38 +139,20 @@ export function PdfViewer() {
   useEffect(() => {
     const scroll = scrollRef.current;
     if (!scroll || !navigationTarget) return;
-    const pageElement = pageElements.current.get(navigationTarget.page);
-    if (!pageElement) return;
-    const targetTop = Math.max(0, pageElement.offsetTop - 12);
-    scroll.scrollTo({ top: targetTop, behavior: 'smooth' });
-    const timeout = window.setTimeout(() => {
-      clearNavigationTarget(navigationTarget.nonce);
-    }, 650);
+    const active = layoutRef.current;
+    if (active.tops.length === 0) return;
+    const index = Math.min(Math.max(navigationTarget.page - 1, 0), active.tops.length - 1);
+    const top = Math.max(0, active.tops[index] - 12);
+    // Page navigation is instant on purpose: an animated scroll through a long
+    // book is slower than the reader and it fights repeated key presses.
+    scroll.scrollTop = top;
+    syncViewportState();
+    const timeout = window.setTimeout(
+      () => clearNavigationTarget(navigationTarget.nonce),
+      60,
+    );
     return () => window.clearTimeout(timeout);
-  }, [clearNavigationTarget, navigationTarget]);
-
-  const updateVisiblePage = useCallback(() => {
-    const scroll = scrollRef.current;
-    if (!scroll || !pageCount) return;
-    const probe = scroll.scrollTop + Math.min(scroll.clientHeight * 0.3, 220);
-    let active = 1;
-    for (let page = 1; page <= pageCount; page += 1) {
-      const element = pageElements.current.get(page);
-      if (!element) continue;
-      if (element.offsetTop <= probe) active = page;
-      else break;
-    }
-    if (scroll.scrollTop + scroll.clientHeight >= scroll.scrollHeight - 4) active = pageCount;
-    setCurrentPage(active);
-  }, [pageCount, setCurrentPage]);
-
-  const handleScroll = () => {
-    if (scrollFrame.current !== null) return;
-    scrollFrame.current = window.requestAnimationFrame(() => {
-      scrollFrame.current = null;
-      updateVisiblePage();
-    });
-  };
+  }, [clearNavigationTarget, navigationTarget, syncViewportState]);
 
   useEffect(() => {
     const scroll = scrollRef.current;
@@ -123,39 +166,39 @@ export function PdfViewer() {
     };
     scroll.addEventListener('wheel', onWheel, { passive: false });
     return () => scroll.removeEventListener('wheel', onWheel);
-  }, [setZoom]);
-
-  useEffect(() => {
-    updateVisiblePage();
-  }, [pageCount, updateVisiblePage, zoom]);
+  }, []);
 
   if (!pdf) return null;
+
+  const virtualize = pageCount > VIRTUALIZE_ABOVE;
+  const start = virtualize ? Math.min(range.start, pageCount - 1) : 0;
+  const end = virtualize ? Math.min(Math.max(range.end, start), pageCount - 1) : pageCount - 1;
+  const before = virtualize ? spaceBefore(layout, start) : 0;
+  const after = virtualize ? spaceAfter(layout, end) : 0;
+
+  const pages = [];
+  for (let pageNumber = start + 1; pageNumber <= end + 1; pageNumber += 1) {
+    pages.push(
+      <PdfPage
+        key={pageNumber}
+        pageNumber={pageNumber}
+        geometry={pageGeometries[pageNumber - 1] ?? { width: 612, height: 792, rotate: 0 }}
+        zoom={zoom}
+        rotation={rotation}
+        tool={tool}
+        annotations={annotationsByPage.get(pageNumber) ?? EMPTY_ANNOTATIONS}
+        selectedId={selectedId}
+        theme={theme}
+      />,
+    );
+  }
 
   return (
     <div className="viewer-scroll" ref={scrollRef} onScroll={handleScroll}>
       <div className="pages-stack">
-        {Array.from({ length: pageCount }, (_, index) => {
-          const pageNumber = index + 1;
-          const geometry = pageGeometries[index] ?? { width: 612, height: 792, rotate: 0 };
-          const pageAnnotations = annotations.filter((annotation) => annotation.page === pageNumber);
-          return (
-            <PdfPage
-              key={pageNumber}
-              pageNumber={pageNumber}
-              geometry={geometry}
-              pdfPage={pageCache.get(pageNumber) ?? null}
-              zoom={zoom}
-              rotation={rotation}
-              tool={tool}
-              annotations={pageAnnotations}
-              selectedId={selectedId}
-              theme={theme}
-              scrollRoot={scrollRoot}
-              registerPage={registerPage}
-              onPageReady={handlePageReady}
-            />
-          );
-        })}
+        {before > 0 && <div className="page-spacer" style={{ height: before }} />}
+        {pages}
+        {after > 0 && <div className="page-spacer" style={{ height: after }} />}
       </div>
     </div>
   );

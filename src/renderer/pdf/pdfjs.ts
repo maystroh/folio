@@ -1,11 +1,81 @@
-import * as pdfjs from 'pdfjs-dist';
-import type { PDFDocumentProxy } from 'pdfjs-dist';
+﻿import * as pdfjs from 'pdfjs-dist';
+import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
 export { pdfjs };
-export type { PDFDocumentProxy };
+export type { PDFDocumentProxy, PDFPageProxy };
+
+/**
+ * A page's text content only changes when the document changes, so it is worth
+ * keeping the extracted layout around while a page scrolls in and out of the
+ * rendered window. Weak so the worker data can be collected with the page.
+ */
+type PageTextContent = Awaited<ReturnType<PDFPageProxy['getTextContent']>>;
+const textContentCache = new WeakMap<PDFPageProxy, Promise<PageTextContent>>();
+
+export function getPageTextContent(page: PDFPageProxy): Promise<PageTextContent> {
+  const cached = textContentCache.get(page);
+  if (cached) return cached;
+  const pending = page.getTextContent();
+  textContentCache.set(page, pending);
+  pending.catch(() => textContentCache.delete(page));
+  return pending;
+}
+
+/**
+ * Pages are released shortly after they leave the rendered window. PDF.js keeps
+ * page proxies for the lifetime of the document, and every rendered page holds
+ * its operator list and decoded images; for a thousand-page, image-heavy book
+ * that is the difference between a few hundred megabytes and a few gigabytes.
+ */
+const cleanupTimers = new WeakMap<PDFPageProxy, number>();
+
+export function retainPage(page: PDFPageProxy): void {
+  const timer = cleanupTimers.get(page);
+  if (timer !== undefined) {
+    window.clearTimeout(timer);
+    cleanupTimers.delete(page);
+  }
+}
+
+export function releasePageSoon(page: PDFPageProxy, delay = 1200): void {
+  releasePageNow(page);
+  const timer = window.setTimeout(() => {
+    cleanupTimers.delete(page);
+    try {
+      page.cleanup();
+    } catch {
+      // A page that is still rendering simply keeps its resources.
+    }
+  }, delay);
+  cleanupTimers.set(page, timer);
+}
+
+function releasePageNow(page: PDFPageProxy): void {
+  const timer = cleanupTimers.get(page);
+  if (timer !== undefined) {
+    window.clearTimeout(timer);
+    cleanupTimers.delete(page);
+  }
+}
+
+/**
+ * Keeps a page bitmap under a fixed memory budget instead of letting a page
+ * rendered at high zoom allocate tens of megabytes. The browser scales the
+ * bitmap up, which is visually indistinguishable for text at print scale.
+ */
+export function renderPixelRatio(cssWidth: number, cssHeight: number, maxArea = 9_000_000): number {
+  const device = Math.min(Math.max(window.devicePixelRatio || 1, 1), 2);
+  const width = Math.max(1, cssWidth);
+  const height = Math.max(1, cssHeight);
+  let ratio = device;
+  const area = width * height * ratio * ratio;
+  if (area > maxArea) ratio = device * Math.sqrt(maxArea / area);
+  const dimensionCap = 4096 / Math.max(width, height);
+  return Math.max(0.5, Math.min(ratio, dimensionCap));
+}
 
 export interface LoadedPdf {
   pdf: PDFDocumentProxy;
@@ -54,48 +124,4 @@ export function normalizePdfError(error: unknown): Error {
     return new Error('The PDF file could not be found.');
   }
   return new Error(raw?.message || 'The PDF could not be opened.');
-}
-
-export async function renderPageToCanvas(
-  pdf: PDFDocumentProxy,
-  pageNumber: number,
-  canvas: HTMLCanvasElement,
-  scale: number,
-  rotation: number,
-  maxPixelRatio = 2,
-): Promise<void> {
-  const page = await pdf.getPage(pageNumber);
-  const baseViewport = page.getViewport({ scale: 1, rotation: page.rotate });
-  const pixelRatio = Math.min(Math.max(window.devicePixelRatio || 1, 1), maxPixelRatio);
-  const viewport = page.getViewport({ scale: scale * pixelRatio, rotation: page.rotate + rotation });
-  const context = canvas.getContext('2d', { alpha: false });
-  if (!context) throw new Error('Canvas rendering is unavailable.');
-
-  canvas.width = Math.max(1, Math.floor(viewport.width));
-  canvas.height = Math.max(1, Math.floor(viewport.height));
-  canvas.style.width = `${baseViewport.width * scale}px`;
-  canvas.style.height = `${baseViewport.height * scale}px`;
-
-  const renderTask = page.render({ canvasContext: context, viewport });
-  await renderTask.promise;
-}
-
-export async function renderThumbnail(
-  pdf: PDFDocumentProxy,
-  pageNumber: number,
-  canvas: HTMLCanvasElement,
-  maxWidth: number,
-  maxHeight: number,
-): Promise<void> {
-  const page = await pdf.getPage(pageNumber);
-  const base = page.getViewport({ scale: 1, rotation: page.rotate });
-  const scale = Math.min(maxWidth / base.width, maxHeight / base.height);
-  const pixelRatio = Math.min(Math.max(window.devicePixelRatio || 1, 1), 2);
-  const viewport = page.getViewport({ scale: scale * pixelRatio, rotation: page.rotate });
-  const context = canvas.getContext('2d', { alpha: false });
-  if (!context) return;
-  canvas.width = Math.max(1, Math.floor(viewport.width));
-  canvas.height = Math.max(1, Math.floor(viewport.height));
-  canvas.style.aspectRatio = `${base.width} / ${base.height}`;
-  await page.render({ canvasContext: context, viewport }).promise;
 }

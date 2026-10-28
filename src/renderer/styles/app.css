@@ -51,13 +51,13 @@
   --bg-deep: #0b0c0b;
   --surface: #171817;
   --surface-raised: #1d1f1d;
-  --reader-bg: #0b0c0b;
+  --reader-bg: #0d0f0e;
   --inset-bg: #20221f;
   --border: #2b2d29;
   --border-strong: #3a3d37;
-  --text: #e6e1d7;
-  --text-secondary: #aaa49a;
-  --text-tertiary: #78736a;
+  --text: #eee9e0;
+  --text-secondary: #bab4aa;
+  --text-tertiary: #938d84;
   --accent: #d49a7d;
   --accent-strong: #e5b198;
   --accent-soft: #2c211c;
@@ -68,7 +68,7 @@
   --danger: #e08c80;
   --danger-soft: #33201d;
   --success: #8fba99;
-  --page-paper: #111210;
+  --page-paper: #111311;
   --page-shadow: 0 0 0 1px #262823, 0 22px 60px rgba(0, 0, 0, 0.55);
   --panel-shadow: 0 26px 70px rgba(0, 0, 0, 0.55);
   --modal-shadow: 0 36px 110px rgba(0, 0, 0, 0.7);
@@ -730,8 +730,13 @@ textarea:focus-visible {
 .thumbnail-grid {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 0;
   align-items: center;
+}
+
+.thumbnail-spacer {
+  flex: 0 0 auto;
+  width: 1px;
 }
 
 .thumbnail-item {
@@ -744,6 +749,7 @@ textarea:focus-visible {
   flex-direction: column;
   align-items: center;
   gap: 6px;
+  margin-bottom: 10px;
   color: var(--text-tertiary);
   transition: background var(--transition);
 }
@@ -759,7 +765,7 @@ textarea:focus-visible {
   width: 132px;
   max-height: 178px;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
   overflow: hidden;
   background: var(--page-paper);
@@ -787,7 +793,7 @@ textarea:focus-visible {
   opacity: 1;
 }
 .dark-page-image {
-  filter: invert(1) hue-rotate(180deg) brightness(0.86) contrast(1.02);
+  filter: invert(0.94) hue-rotate(180deg) brightness(1.08) contrast(1.08);
 }
 
 .thumbnail-skeleton {
@@ -805,6 +811,7 @@ textarea:focus-visible {
 
 .thumbnail-number {
   font-size: 10.5px;
+  line-height: 14px;
   font-variant-numeric: tabular-nums;
   font-weight: 500;
 }
@@ -917,9 +924,15 @@ textarea:focus-visible {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 28px;
+  gap: 0;
   padding: 30px 44px 98px;
   min-width: min-content;
+}
+
+/* Reserved space for pages that are outside the rendered window. */
+.page-spacer {
+  flex: 0 0 auto;
+  width: 1px;
 }
 
 .pdf-page {
@@ -928,7 +941,7 @@ textarea:focus-visible {
   border-radius: 3px;
   box-shadow: var(--page-shadow);
   background: var(--page-paper);
-  margin-bottom: 16px;
+  margin: 0 0 44px;
 }
 
 .pdf-page.cursor-pen,
@@ -958,10 +971,10 @@ textarea:focus-visible {
 }
 
 .pdf-page-dark .page-surface {
-  border-color: #292b27;
+  border-color: #2c2f2a;
 }
 .pdf-page-dark {
-  background: #111210;
+  background: #111311;
 }
 
 .page-canvas {
@@ -973,7 +986,7 @@ textarea:focus-visible {
 }
 
 .pdf-page-dark .page-canvas {
-  filter: invert(1) hue-rotate(180deg) brightness(0.86) contrast(1.02);
+  filter: invert(0.94) hue-rotate(180deg) brightness(1.08) contrast(1.08);
 }
 
 .page-placeholder {
@@ -988,7 +1001,7 @@ textarea:focus-visible {
   pointer-events: none;
 }
 .pdf-page-dark .page-placeholder {
-  background: #111210;
+  background: #111311;
 }
 .page-skeleton-line {
   height: 7px;
